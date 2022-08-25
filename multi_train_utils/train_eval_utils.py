@@ -25,7 +25,7 @@ def train_one_epoch(model, optimizer, data_loader, device, epoch, amp, global_st
         true_masks = data['mask']
 
         assert images.shape[1] == model.module.n_channels, \
-                    f'Network has been defined with {model.n_channels} input channels, ' \
+                    f'Network has been defined with {model.module.n_channels} input channels, ' \
                     f'but loaded images have {images.shape[1]} channels. Please check that ' \
                     'the images are loaded correctly.'
 

@@ -5,7 +5,7 @@ import sys
 import tempfile
 from pathlib import Path
 import os
-os.environ['CUDA_VISIBLE_DEVICES'] = '0,1,2,3'
+os.environ['CUDA_VISIBLE_DEVICES'] = '2,3'
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -14,8 +14,7 @@ from torch import optim
 from torch.utils.tensorboard import SummaryWriter
 from torch.utils.data import DataLoader, random_split
 from tqdm import tqdm
-
-
+import time
 from utils.data_loading import BasicDataset, CarvanaDataset
 from utils.dice_score import dice_loss
 from unet import UNet
@@ -24,37 +23,11 @@ import torch.distributed as dist
 from multi_train_utils.distributed_utils import init_distributed_mode, dist, cleanup
 from multi_train_utils.train_eval_utils import train_one_epoch, evaluate
 
-from utils.data_loading import LNM_trainDataset, LNM_testDataset
+from utils.data_loading import LNM_Dataset
 
-dir_img = Path('/data/lsy/carvana/imgs/train/')
-dir_mask = Path('/data/lsy/carvana/masks/train_masks/')
+# dir_img = Path('/data/lsy/carvana/imgs/train/')
+# dir_mask = Path('/data/lsy/carvana/masks/train_masks/')
 dir_checkpoint = Path('./checkpoints/')
-
-
-
-def data_loader(root_path, BATCH_SIZE):
-    train_data = LNM_trainDataset(r"./train_8_1.csv", root_path, 'over-sample',
-                                  transform=None)
-    trainloader = DataLoader(dataset=train_data, batch_size=BATCH_SIZE, shuffle=True)
-
-    training = LNM_testDataset(r"./train_8_1.csv", root_path, transform=None)
-    trainingloader = DataLoader(dataset=training, batch_size=BATCH_SIZE)
-
-    valid_data = LNM_testDataset(r"./test_8_1.csv", root_path, transform=None)
-    validloader = DataLoader(dataset=valid_data, batch_size=BATCH_SIZE)
-    # 6中心的外部验证
-    test_data = LNM_testDataset(r'./exter1.csv', root_path, transform=None)
-    testloader = DataLoader(dataset=test_data, batch_size=BATCH_SIZE)
-
-    # 2个中心的外部验证
-    exter_data = LNM_testDataset(r'./exter1.csv', root_path, transform=None)
-    exterloader = DataLoader(dataset=exter_data, batch_size=BATCH_SIZE)
-    # 4个中心的外部验证
-    exter_data2 = LNM_testDataset(r'./exter2.csv', root_path, transform=None)
-    exterloader2 = DataLoader(dataset=exter_data2, batch_size=BATCH_SIZE)
-
-    return trainloader,trainingloader,validloader,testloader,exterloader,exterloader2
-
 
 def train_net(net,
               device,
@@ -66,15 +39,21 @@ def train_net(net,
               img_scale: float = 0.5,
               amp: bool = False):
     # 1. Create dataset
-    try:
-        dataset = CarvanaDataset(dir_img, dir_mask, img_scale)
-    except (AssertionError, RuntimeError):
-        dataset = BasicDataset(dir_img, dir_mask, img_scale)
+    # try:
+    #     dataset = CarvanaDataset(dir_img, dir_mask, img_scale)
+    # except (AssertionError, RuntimeError):
+    #     dataset = BasicDataset(dir_img, dir_mask, img_scale)
 
     # 2. Split into train / validation partitions
-    n_val = int(len(dataset) * val_percent)
-    n_train = len(dataset) - n_val
-    train_set, val_set = random_split(dataset, [n_train, n_val], generator=torch.Generator().manual_seed(0))
+    # n_val = int(len(dataset) * val_percent)
+    # n_train = len(dataset) - n_val
+    # train_set, val_set = random_split(dataset, [n_train, n_val], generator=torch.Generator().manual_seed(0))
+
+    train_set = LNM_Dataset('train_8_1.csv')
+    val_set = LNM_Dataset('validation_8_1.csv')
+
+    n_train = len(train_set)
+    n_val = len(val_set)
 
     ###Distributed
     train_sampler = torch.utils.data.distributed.DistributedSampler(train_set)
@@ -171,9 +150,10 @@ def train_net(net,
 
     # 删除临时缓存文件
     if rank == 0:
+        time_str = str(time.strftime("%Y-%m-%d-%H-%M-%S", time.localtime()))
         if os.path.exists(checkpoint_path) is True:
             os.remove(checkpoint_path)
-        torch.save(net.state_dict(), 'MODEL.pth')
+        torch.save(net.state_dict(), 'MODEL_' + time_str + '.pth')
 
     cleanup()
 
@@ -226,7 +206,7 @@ if __name__ == '__main__':
 
 
 
-    net = UNet(n_channels=3, n_classes=args.classes, bilinear=args.bilinear)
+    net = UNet(n_channels=1, n_classes=args.classes, bilinear=args.bilinear)
     if rank ==0:
         logging.info(f'Network:\n'
                     f'\t{net.n_channels} input channels\n'
