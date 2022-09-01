@@ -5,7 +5,7 @@ import numpy as np
 import os
 from skimage.transform import resize
 from PIL import Image
-import utils.Augmentation as Augmentation
+import Augmentation as Augmentation
 import random
 
 # data loader1

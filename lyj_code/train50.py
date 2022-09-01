@@ -10,9 +10,8 @@ import numpy as np
 from sklearn import metrics
 import numpy as np
 from torch.utils.data.sampler import WeightedRandomSampler
-
-from utils import *  # 自定义dataloader
-
+import random
+from dataset import LNM_trainDataset, LNM_testDataset
 from nets import resnet
 
 
@@ -31,24 +30,24 @@ def fix_random(i):
 
 
 def data_loader(root_path, BATCH_SIZE):
-    train_data = LNM_trainDataset(r"./train_8_1.csv", root_path, 'over-sample',
+    train_data = LNM_trainDataset("../train_8_1.csv", root_path, 'over-sample',
                                   transform=None)
     trainloader = DataLoader(dataset=train_data, batch_size=BATCH_SIZE, shuffle=True)
 
-    training = LNM_testDataset(r"./train_8_1.csv", root_path, transform=None)
+    training = LNM_testDataset("../train_8_1.csv", root_path, transform=None)
     trainingloader = DataLoader(dataset=training, batch_size=BATCH_SIZE)
 
-    valid_data = LNM_testDataset(r"./test_8_1.csv", root_path, transform=None)
+    valid_data = LNM_testDataset("../validation_8_1.csv", root_path, transform=None)
     validloader = DataLoader(dataset=valid_data, batch_size=BATCH_SIZE)
     # 6中心的外部验证
-    test_data = LNM_testDataset(r'./exter1.csv', root_path, transform=None)
+    test_data = LNM_testDataset('../exter1.csv', root_path, transform=None)
     testloader = DataLoader(dataset=test_data, batch_size=BATCH_SIZE)
 
     # 2个中心的外部验证
-    exter_data = LNM_testDataset(r'./exter1.csv', root_path, transform=None)
+    exter_data = LNM_testDataset('../exter1.csv', root_path, transform=None)
     exterloader = DataLoader(dataset=exter_data, batch_size=BATCH_SIZE)
     # 4个中心的外部验证
-    exter_data2 = LNM_testDataset(r'./exter2.csv', root_path, transform=None)
+    exter_data2 = LNM_testDataset('../exter2.csv', root_path, transform=None)
     exterloader2 = DataLoader(dataset=exter_data2, batch_size=BATCH_SIZE)
 
     return trainloader,trainingloader,validloader,testloader,exterloader,exterloader2
@@ -152,7 +151,7 @@ if __name__ == "__main__":
         # 定义是否使用GPU
         os.environ["CUDA_VISIBLE_DEVICES"] = "0,1,2,3"
         device = torch.device('cuda:0')
-        outfolder = "/data/lyj/LNM202203/weight"
+        outfolder = "/home/lsy/LNM_2208/lyj_code/weight"
 
         # 超参数设置
         EPOCH = 200

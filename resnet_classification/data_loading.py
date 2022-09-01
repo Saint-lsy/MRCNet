@@ -171,7 +171,7 @@ class LNM_Dataset(BasicDataset):
         transform_train = transforms.Compose([
             transforms.ToPILImage(),#不转换为PIL会报错
             # transforms.Resize(),        
-            transforms.CenterCrop(size=(224,224)),
+            transforms.CenterCrop(size=(300,300)),
             # transforms.RandomResizedCrop(input_size),
             transforms.RandomHorizontalFlip(p),
             # transforms.ColorJitter(brightness=0.5, contrast=0.5, hue=0.5),
@@ -180,8 +180,7 @@ class LNM_Dataset(BasicDataset):
             ])
         img = transform_train(img)
         mask = transform_train(mask)
-        if self.input_channel == 1:
-            mask = mask[0]
+
         return {
             'image': torch.as_tensor(img).float().contiguous(),
             'mask': torch.as_tensor(mask).long().contiguous(),
@@ -195,4 +194,3 @@ if __name__ == '__main__':
     train_set = LNM_Dataset('train_8_1.csv', input_channel = 1)
     train_set[0]
     val_set = LNM_Dataset('validation_8_1.csv')
-    

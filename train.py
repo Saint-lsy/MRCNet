@@ -1,6 +1,7 @@
 import argparse
 import logging
 from pyexpat import model
+import re
 import sys
 import tempfile
 from pathlib import Path
@@ -17,7 +18,7 @@ from tqdm import tqdm
 import time
 from utils.data_loading import BasicDataset, CarvanaDataset
 from utils.dice_score import dice_loss
-from unet import UNet
+from models import UNet, resnet34, resnet50, resnet101
 import torch.distributed as dist
 
 from multi_train_utils.distributed_utils import init_distributed_mode, dist, cleanup
@@ -108,8 +109,9 @@ def train_net(net,
     # 4. Set up the optimizer, the loss, the learning rate scheduler and the loss scaling for AMP
     pg = [p for p in net.parameters() if p.requires_grad]
     optimizer = optim.RMSprop(pg, lr=learning_rate, weight_decay=1e-8, momentum=0.9)
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'max', patience=2)  # goal: maximize Dice score
-
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'max', patience=2)  # goal: maximize Dice score 
+    ####resnet
+    # optimizer = optim.Adam(pg, lr=0.0001)
 
     global_step = 0
 
@@ -205,8 +207,10 @@ if __name__ == '__main__':
 
 
 
-
+    net = resnet34()
+    
     net = UNet(n_channels=1, n_classes=args.classes, bilinear=args.bilinear)
+
     if rank ==0:
         logging.info(f'Network:\n'
                     f'\t{net.n_channels} input channels\n'
