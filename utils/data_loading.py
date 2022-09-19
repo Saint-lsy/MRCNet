@@ -1,4 +1,5 @@
 import logging
+from math import degrees
 from os import listdir
 from os.path import splitext
 from pathlib import Path
@@ -17,6 +18,9 @@ from PIL import Image
 import random
 from torchvision import transforms
 
+from torch.utils.data.distributed import DistributedSampler
+from typing import Sequence
+from torch import Tensor
 class BasicDataset(Dataset):
     def __init__(self, images_dir: str, masks_dir: str, scale: float = 1.0, mask_suffix: str = '', transform = None):
         self.images_dir = Path(images_dir)
@@ -97,7 +101,8 @@ class LNM_Dataset(BasicDataset):
                 scale: float = 1.0, 
                 mask_suffix: str = '',
                 input_channel = 1,
-                transform=None
+                transform=None,
+                mode = 'train'
                 ):
         data_info = pd.read_csv(csv_filepath)
         self.images_dir = Path(images_dir)
@@ -109,6 +114,7 @@ class LNM_Dataset(BasicDataset):
         self.labels = list(data_info['Class'])
         self.transform = transform
         self.input_channel = input_channel
+        self.mode = mode
         # self.ids = [splitext(file)[0] for file in listdir(images_dir) if not file.startswith('.')]
         if not self.ids:
             raise RuntimeError(f'No input file found in {images_dir}, make sure you put your images there')
@@ -166,20 +172,47 @@ class LNM_Dataset(BasicDataset):
         # .transpose(1, 2, 0)
         img = torch.from_numpy(img)
         mask = torch.from_numpy(mask)
-        p = np.random.choice([0, 1])#在0，1二者中随机取一个，
+        if self.mode == 'train':
+            p = np.random.choice([0, 1])#在0，1二者中随机取一个，
+            seed = np.random.randint(2147483647)
+            random.seed(seed)
+            transform_train_img = transforms.Compose([
+                transforms.ToPILImage(),#不转换为PIL会报错
+                # transforms.Resize(),   
+                transforms.RandomRotation(degrees = 5, expand=False, center=None),       
+                transforms.CenterCrop(size=(224,224)),
+                # transforms.RandomResizedCrop(input_size),
+                # transforms.RandomHorizontalFlip(p),    ##效果不明显
+                # transforms.ColorJitter(brightness=0.5, contrast=0.5, hue=0.5),
+                transforms.ToTensor(),   
+                # transforms.Normalize([0.679, 0.678, 0.678], [0.105, 0.107, 0.108])
+                transforms.Normalize([0.501], [0.175])
+                ])
+            img = transform_train_img(img)                
+            random.seed(seed)
 
-        transform_train = transforms.Compose([
-            transforms.ToPILImage(),#不转换为PIL会报错
-            # transforms.Resize(),        
-            transforms.CenterCrop(size=(224,224)),
-            # transforms.RandomResizedCrop(input_size),
-            transforms.RandomHorizontalFlip(p),
-            # transforms.ColorJitter(brightness=0.5, contrast=0.5, hue=0.5),
-            transforms.ToTensor(),   
-            # transforms.Normalize([0.679, 0.678, 0.678], [0.105, 0.107, 0.108])
-            ])
-        img = transform_train(img)
-        mask = transform_train(mask)
+            transform_train_seg = transforms.Compose([
+                transforms.ToPILImage(),
+                transforms.CenterCrop(size=(224,224)),
+                transforms.RandomRotation(degrees = 5, expand=False, center=None),       
+                # transforms.RandomHorizontalFlip(p),    ##效果不明显
+                transforms.ToTensor(),   
+                ])
+            mask = transform_train_seg(mask)        
+        elif self.mode == 'val':
+            transform_val_img = transforms.Compose([
+                transforms.ToPILImage(),#不转换为PIL会报错
+                transforms.CenterCrop(size=(224,224)),
+                transforms.ToTensor(),   
+                transforms.Normalize([0.501], [0.175])
+                ])
+            transform_val_seg = transforms.Compose([
+                transforms.ToPILImage(),#不转换为PIL会报错
+                transforms.CenterCrop(size=(224,224)),
+                transforms.ToTensor(),   
+                ])
+            img = transform_val_img(img)
+            mask = transform_val_seg(mask)
         if self.input_channel == 1:
             mask = mask[0]
         return {
@@ -190,9 +223,94 @@ class LNM_Dataset(BasicDataset):
  
 
 
+def getStat(train_data):
+    '''
+    Compute mean and variance for training data
+    :param train_data: 自定义类Dataset(或ImageFolder即可)
+    :return: (mean, std)
+    '''
+    print('Compute mean and variance for training data.')
+    print(len(train_data))
+    # train_loader = torch.utils.data.DataLoader(
+    #     train_data, batch_size=1, shuffle=False, num_workers=0,
+    #     pin_memory=True)
+    mean = torch.zeros(1)
+    std = torch.zeros(1)
+    for i in range(len(train_data)):
+        img = train_data[i]['image']
+        #求均值方差
+        # for j in range(3):
+        #     mean[j] += img[j, :, :].mean()
+        #     std[j] += img[j, :, :].std()
+        mean += img[:, :].mean()
+        std += img[:, :].std()
+    mean.div_(len(train_data))
+    std.div_(len(train_data))
+    print('mean:', mean)
+    print('std:', std)
+    return list(mean.numpy()), list(std.numpy())
+
+
+
+
+
+
+class WeightedRandomSamplerDDP(DistributedSampler):
+    r"""Samples elements from ``[0,..,len(weights)-1]`` with given probabilities (weights).
+
+    Args:
+        data_set: Dataset used for sampling.
+        weights (sequence)   : a sequence of weights, not necessary summing up to one
+        num_replicas (int, optional): Number of processes participating in
+            distributed training. By default, :attr:`world_size` is retrieved from the
+            current distributed group.
+        rank (int, optional): Rank of the current process within :attr:`num_replicas`.
+            By default, :attr:`rank` is retrieved from the current distributed
+            group.
+        num_samples (int): number of samples to draw
+        replacement (bool): if ``True``, samples are drawn with replacement.
+            If not, they are drawn without replacement, which means that when a
+            sample index is drawn for a row, it cannot be drawn again for that row.
+        generator (Generator): Generator used in sampling.
+    """
+    weights: Tensor
+    num_samples: int
+    replacement: bool
+
+    def __init__(self, data_set, weights: Sequence[float], num_replicas: int, rank: int, num_samples: int,
+                 replacement: bool = True, generator=None) -> None:
+        super(WeightedRandomSamplerDDP, self).__init__(data_set, num_replicas, rank)
+        if not isinstance(num_samples, int) or isinstance(num_samples, bool) or \
+                num_samples <= 0:
+            raise ValueError("num_samples should be a positive integer "
+                             "value, but got num_samples={}".format(num_samples))
+        if not isinstance(replacement, bool):
+            raise ValueError("replacement should be a boolean value, but got "
+                             "replacement={}".format(replacement))
+        self.weights = torch.as_tensor(weights, dtype=torch.double)
+        self.num_samples = num_samples
+        self.replacement = replacement
+        self.generator = generator
+        self.num_replicas = num_replicas
+        self.rank = rank
+        self.weights = self.weights[self.rank::self.num_replicas]
+        self.num_samples = self.num_samples // self.num_replicas
+
+    def __iter__(self):
+        rand_tensor = torch.multinomial(self.weights, self.num_samples, self.replacement, generator=self.generator)
+        rand_tensor =  self.rank + rand_tensor * self.num_replicas
+        return iter(rand_tensor.tolist())
+
+    def __len__(self):
+        return self.num_samples
+
+
+
+
 if __name__ == '__main__':
 
     train_set = LNM_Dataset('train_8_1.csv', input_channel = 1)
+    print(getStat(train_set))
     train_set[0]
     val_set = LNM_Dataset('validation_8_1.csv')
     

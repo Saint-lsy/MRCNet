@@ -8,9 +8,16 @@
             "name": "Python: Current File",
             "type": "python",
             "request": "launch",
-            "program": "${file}",
+            "program": "/home/lsy/.conda/envs/radiomics/lib/python3.8/site-packages/torch/distributed/launch.py",
             "console": "integratedTerminal",
-            "justMyCode": true
+            "justMyCode": true,
+            "args": [
+                "--nproc_per_node=1", 
+                "--use_env",
+                "train.py"
+            ],
+            "env": {"CUDA_VISIBLE_DEVICES":"0"},
+
         }
     ]
 }

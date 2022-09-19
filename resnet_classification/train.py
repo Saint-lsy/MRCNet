@@ -9,7 +9,7 @@ import torch.optim as optim
 from torchvision import transforms, datasets
 from tqdm import tqdm
 from sklearn import metrics
-from model import resnet34
+from model import resnet34, resnet50, resnet101
 from data_loading import LNM_Dataset
 from torch.utils.data import DataLoader, random_split
 
@@ -47,7 +47,8 @@ def main():
     transform_train = transforms.Compose([
         # transforms.ToPILImage(),#不转换为PIL会报错
         # transforms.Resize(),  
-        transforms.ToTensor(),     
+        transforms.ToTensor(),   
+        transforms.RandomRotation(degree = 10,resample=False,expand=False,center=None),  
         transforms.CenterCrop(size=(300,300)),
         # transforms.RandomResizedCrop(input_size),
         transforms.RandomHorizontalFlip(p=0.4)
