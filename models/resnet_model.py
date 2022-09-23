@@ -1,6 +1,6 @@
 import torch.nn as nn
 import torch
-
+from torchvision.models import resnet18
 
 class BasicBlock(nn.Module):
     expansion = 1
@@ -196,3 +196,20 @@ def resnext101_32x8d(num_classes=1000, include_top=True):
                   include_top=include_top,
                   groups=groups,
                   width_per_group=width_per_group)
+
+
+class ResNet18(nn.Module):
+
+    def __init__(self, 
+                n_channels,
+                n_classes,        
+    ):   
+        super(ResNet18, self).__init__()
+        self.n_channels = n_channels
+        self.n_classes = n_classes
+        self.net = resnet18(pretrained=True)
+        num_fc_ftr = self.net.fc.in_features
+        self.net.fc = torch.nn.Linear(num_fc_ftr, 2)
+    
+    def forward(self, x):
+        return None, self.net(x)

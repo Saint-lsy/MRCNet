@@ -169,6 +169,11 @@ class LNM_Dataset(BasicDataset):
         ####tensfer to 3 channels
         if self.input_channel == 3:
             img = img.repeat(3, axis=0)
+            normw = [0.501, 0.501, 0.501]
+            normh = [0.175, 0.175, 0.175]
+        else:
+            normw = [0.501]
+            normh = [0.175]
         # .transpose(1, 2, 0)
         img = torch.from_numpy(img)
         mask = torch.from_numpy(mask)
@@ -186,7 +191,7 @@ class LNM_Dataset(BasicDataset):
                 # transforms.ColorJitter(brightness=0.5, contrast=0.5, hue=0.5),
                 transforms.ToTensor(),   
                 # transforms.Normalize([0.679, 0.678, 0.678], [0.105, 0.107, 0.108])
-                transforms.Normalize([0.501], [0.175])
+                transforms.Normalize(normw, normh)
                 ])
             img = transform_train_img(img)                
             random.seed(seed)

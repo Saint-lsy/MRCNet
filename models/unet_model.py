@@ -45,7 +45,7 @@ class classify_head(nn.Module):
         super().__init__()
         mid_channels = out_channels
         self.cls_conv = nn.Sequential(
-            nn.Conv2d(in_channels, mid_channels, kernel_size=1, padding=1, bias=False),
+            nn.Conv2d(in_channels, mid_channels, kernel_size=3, padding=1, bias=False),
             nn.BatchNorm2d(mid_channels),
             nn.ReLU(inplace=True),
             nn.Conv2d(mid_channels, out_channels, kernel_size=3, padding=1, bias=False),
@@ -71,11 +71,20 @@ class classify_head(nn.Module):
 
 class mtihead_Unet(UNet):
 
-    def __init__(self, n_channels, n_classes, bilinear=False):
+    def __init__(self, 
+                n_channels,
+                n_classes, 
+                bilinear=False,        
+                seg_task: bool = True,
+                cls_task: bool = False
+    ):
         super(UNet, self).__init__()
         self.n_channels = n_channels
         self.n_classes = n_classes
+        self.out_sigmoid = False if n_classes > 1 else True
         self.bilinear = bilinear
+        self.seg_task = seg_task
+        self.cls_task = cls_task
 
         self.inc = DoubleConv(n_channels, 64)
         self.down1 = Down(64, 128)
@@ -88,7 +97,8 @@ class mtihead_Unet(UNet):
         self.up3 = Up(256, 128 // factor, bilinear)
         self.up4 = Up(128, 64, bilinear)
         self.outc = OutConv(64, n_classes)
-        self.cls_head = classify_head(n_classes)
+        if self.cls_task:
+            self.cls_head = classify_head(n_classes)
     def forward(self, x):
         x1 = self.inc(x)
         x2 = self.down1(x1)
@@ -100,7 +110,10 @@ class mtihead_Unet(UNet):
         x = self.up3(x, x2)
         x = self.up4(x, x1)
         logits = self.outc(x)
-        cls_out = self.cls_head(x5)
-        return logits, cls_out
+        if self.cls_task:
+            cls_out = self.cls_head(x5)
+            return logits, cls_out
+        else:
+            return logits, None
 
 

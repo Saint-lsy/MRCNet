@@ -163,7 +163,7 @@ def evaluate(model, data_loader, device, global_step, experiment, epoch):
 
 
 
-def undis_evaluate(net, dataloader, device):
+def undis_evaluate(net, dataloader, device, seg_task, cls_task):
     net.eval()
     num_val_batches = len(dataloader)
     val_num = 164
@@ -177,36 +177,45 @@ def undis_evaluate(net, dataloader, device):
         # move images and labels to correct device and type
         image = image.to(device=device, dtype=torch.float32)
         mask_true = mask_true.to(device=device, dtype=torch.long)
-        mask_true = F.one_hot(mask_true, net.n_classes).permute(0, 3, 1, 2).float()
-
+        # net = net.cuda()
         with torch.no_grad():
             # predict the mask
-            mask_pred, cls_pred = net(image)
+            if seg_task:
+                mask_pred, _ = net(image)          
+                if net.n_classes == 1:
+                    mask_pred = (torch.sigmoid(mask_pred) > 0.5).float()
+                    # compute the Dice score
+                    dice_score += dice_coeff(mask_pred.squeeze(), mask_true.float(), reduce_batch_first=False)
+                else:
+                    mask_true = F.one_hot(mask_true, net.n_classes).permute(0, 3, 1, 2).float()
+                    mask_pred = F.one_hot(mask_pred.argmax(dim=1), net.n_classes).permute(0, 3, 1, 2).float()
+                    # compute the Dice score, ignoring background
+                    dice_score += multiclass_dice_coeff(mask_pred[:, 1:, ...], mask_true[:, 1:, ...], reduce_batch_first=False)            
 
-            # convert to one-hot format
-            if net.n_classes == 1:
-                mask_pred = (F.sigmoid(mask_pred) > 0.5).float()
-                # compute the Dice score
-                dice_score += dice_coeff(mask_pred, mask_true, reduce_batch_first=False)
-            else:
-                mask_pred = F.one_hot(mask_pred.argmax(dim=1), net.n_classes).permute(0, 3, 1, 2).float()
-                # compute the Dice score, ignoring background
-                dice_score += multiclass_dice_coeff(mask_pred[:, 1:, ...], mask_true[:, 1:, ...], reduce_batch_first=False)
-
-                #####计算分类准确率
+            if cls_task:
+                # #####计算分类准确率
+                _, cls_pred = net(image)
                 cls_pred = torch.max(cls_pred, dim=1)[1]
                 TP += torch.sum((cls_pred == cls_true.to(device)) & (cls_true.to(device) == 1))
                 TN += torch.sum((cls_pred == cls_true.to(device)) & (cls_true.to(device) == 0))
                 FP += torch.sum((cls_pred != cls_true.to(device)) & (cls_true.to(device) == 0))
                 FN += torch.sum((cls_pred != cls_true.to(device)) & (cls_true.to(device) == 1))
                 acc += torch.eq(cls_pred, cls_true.to(device)).sum()
+
     if num_val_batches != 0:
-        dice_score = dice_score / num_val_batches
-        val_accurate = acc / val_num
-        sens = TP.double() / (TP + FN)
-        spec = TN.double() / (TN + FP)           
+        if seg_task:
+            dice_score = dice_score / num_val_batches
+        if cls_task:
+            val_accurate = acc / val_num
+            sens = TP.double() / (TP + FN)
+            spec = TN.double() / (TN + FP)           
 
     net.train()
 
     # Fixes a potential division by zero error
-    return dice_score, val_accurate, sens, spec
+    if seg_task and cls_task:
+        return dice_score, val_accurate, sens, spec
+    elif seg_task:
+        return dice_score, 0, 0, 0
+    elif cls_task:
+        return 0, val_accurate, sens, spec
