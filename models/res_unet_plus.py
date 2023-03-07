@@ -1,6 +1,6 @@
 import torch.nn as nn
 import torch
-
+from .unet_parts import *
 
 class ResidualConv(nn.Module):
     def __init__(self, input_dim, output_dim, stride, padding):

@@ -8,6 +8,7 @@ from utils.dice_score import dice_loss
 import torch.nn.functional as F
 import wandb
 from utils.dice_score import multiclass_dice_coeff, dice_coeff
+from sklearn.metrics import roc_auc_score
 
 def train_one_epoch(model, optimizer, data_loader, device, epoch, amp, global_step, experiment):
     model.train()
@@ -81,7 +82,7 @@ def evaluate(model, data_loader, device, global_step, experiment, epoch):
     model.eval()
     num_val_batches = len(data_loader)
     dice_score = 0
-    val_num = 164
+    val_num = 192
     # 用于存储预测正确的样本个数
     # sum_num = torch.zeros(1).to(device)
 
@@ -166,10 +167,16 @@ def evaluate(model, data_loader, device, global_step, experiment, epoch):
 def undis_evaluate(net, dataloader, device, seg_task, cls_task):
     net.eval()
     num_val_batches = len(dataloader)
-    val_num = 164
+    val_num = 192
     dice_score = 0
     acc = 0.0
+    # auc2 = 0.0
     TP, TN, FP, FN =0, 0, 0, 0
+    valid_probs = torch.Tensor([]).to(device)
+    valid_masks = torch.Tensor([]).to(device)
+    valid_labels = torch.IntTensor([])
+    valid_maskprob = torch.IntTensor([]).to(device)
+
     # iterate over the validation set
     for batch in tqdm(dataloader, total=num_val_batches, desc='Validation round', unit='batch', leave=False):
 
@@ -188,34 +195,44 @@ def undis_evaluate(net, dataloader, device, seg_task, cls_task):
                     dice_score += dice_coeff(mask_pred.squeeze(), mask_true.float(), reduce_batch_first=False)
                 else:
                     mask_true = F.one_hot(mask_true, net.n_classes).permute(0, 3, 1, 2).float()
+                    valid_maskprob = torch.cat((valid_maskprob, F.softmax(mask_pred, dim=1)[:,1]), 0)
+
                     mask_pred = F.one_hot(mask_pred.argmax(dim=1), net.n_classes).permute(0, 3, 1, 2).float()
                     # compute the Dice score, ignoring background
                     dice_score += multiclass_dice_coeff(mask_pred[:, 1:, ...], mask_true[:, 1:, ...], reduce_batch_first=False)            
-
+                    valid_masks = torch.cat((valid_masks, mask_pred[:,1]), 0)
+                    
             if cls_task:
                 # #####计算分类准确率
                 _, cls_pred = net(image)
+                valid_probs = torch.cat((valid_probs, cls_pred), 0)
+                valid_labels = torch.cat((valid_labels, cls_true), 0)
+                
                 cls_pred = torch.max(cls_pred, dim=1)[1]
                 TP += torch.sum((cls_pred == cls_true.to(device)) & (cls_true.to(device) == 1))
                 TN += torch.sum((cls_pred == cls_true.to(device)) & (cls_true.to(device) == 0))
                 FP += torch.sum((cls_pred != cls_true.to(device)) & (cls_true.to(device) == 0))
                 FN += torch.sum((cls_pred != cls_true.to(device)) & (cls_true.to(device) == 1))
                 acc += torch.eq(cls_pred, cls_true.to(device)).sum()
-
+                    
     if num_val_batches != 0:
         if seg_task:
             dice_score = dice_score / num_val_batches
+            iou = dice_score / (2 - dice_score)
+            valid_masks = valid_masks.cpu()
+            valid_maskprob = valid_maskprob.cpu()
         if cls_task:
             val_accurate = acc / val_num
+            auc1 = roc_auc_score(F.one_hot(valid_labels), valid_probs.cpu(), average='macro')
+            auc2 = roc_auc_score(valid_labels, valid_probs[:,0].cpu())
             sens = TP.double() / (TP + FN)
             spec = TN.double() / (TN + FP)           
-
     net.train()
 
     # Fixes a potential division by zero error
     if seg_task and cls_task:
-        return dice_score, val_accurate, sens, spec
+        return dice_score, iou, val_accurate, auc2, sens, spec, 0, 0
     elif seg_task:
-        return dice_score, 0, 0, 0
+        return dice_score, iou, 0, 0, 0, 0, valid_masks, valid_maskprob
     elif cls_task:
-        return 0, val_accurate, sens, spec
+        return 0, 0, val_accurate, auc2, sens, spec, 0, 0

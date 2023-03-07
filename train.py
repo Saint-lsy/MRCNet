@@ -17,15 +17,24 @@ from tqdm import tqdm
 import time
 from utils.data_loading import BasicDataset, CarvanaDataset
 from utils.dice_score import dice_loss, dice_coeff, multiclass_dice_coeff
-from models import UNet, mtihead_Unet, resnet34, resnet50, resnet101, ResUnet, ResUnetPlusPlus, ResNet18
+from models import MRCNet, mtihead_Unet, resnet34, resnet50, resnet101, ResUnet, ResUnetPlusPlus, ResNet18, mtihead_ResUnet
 from torchvision.models import resnet18
 import torch.distributed as dist
-
+import numpy as np
 from multi_train_utils.distributed_utils import init_distributed_mode, dist, cleanup
 from multi_train_utils.train_eval_utils import train_one_epoch, evaluate, undis_evaluate
-
+import random
 from utils.data_loading import LNM_Dataset
-
+from utils.lossfunction import GeneralizedDiceLoss, WeightedCrossEntropyLoss, FocalLossV1
+seed = 42
+torch.manual_seed(seed)  # cpu种子
+# torch.cuda.manual_seed(seed) # 当前GPU的种子
+torch.cuda.manual_seed_all(seed)
+np.random.seed(seed)
+random.seed(seed)
+torch.backends.cudnn.enabled = True   # 默认值
+torch.backends.cudnn.benchmark = False  # 默认为False
+torch.backends.cudnn.deterministic = True
 # dir_img = Path('/data/lsy/carvana/imgs/train/')
 # dir_mask = Path('/data/lsy/carvana/masks/train_masks/')
 dir_checkpoint = Path('./checkpoints/')
@@ -54,23 +63,24 @@ def train_net(net,
     # n_train = len(dataset) - n_val
     # train_set, val_set = random_split(dataset, [n_train, n_val], generator=torch.Generator().manual_seed(0))
 
-    train_set = LNM_Dataset('train_8_1.csv',input_channel=input_channel)
-    val_set = LNM_Dataset('validation_8_1.csv', input_channel=input_channel, mode='val')
+    train_set = LNM_Dataset('train_10_12.csv',input_channel=input_channel)
+    val_set = LNM_Dataset('validation_10_12.csv', input_channel=input_channel, mode='val')
 
     n_train = len(train_set)
     n_val = len(val_set)
 
 
     '''
-    posi_num = 143
-    nega_num = 516    
+    posi_num = 159
+    nega_num = 620   
+    all_num = 779 
     '''
     train_weights = []
     for train_sample in train_set:
         if train_sample['label']  == torch.tensor(1):
-            train_weights.append(659/143)
+            train_weights.append(779/159)
         else:
-            train_weights.append(659/516)     
+            train_weights.append(779/620)     
     train_weights = torch.FloatTensor(train_weights)
     train_sampler = torch.utils.data.sampler.WeightedRandomSampler(train_weights, len(train_weights))
 ###### 143posi 516nega
@@ -81,7 +91,8 @@ def train_net(net,
     print('Using {} dataloader workers every process'.format(nw))
 
     # 3. Create data loaders
-    train_loader = DataLoader(train_set, shuffle=False, batch_size=batch_size, num_workers=nw, pin_memory=True, sampler=train_sampler)
+    # , sampler=train_sampler
+    train_loader = DataLoader(train_set, shuffle=False, batch_size=batch_size, num_workers=nw, pin_memory=True)
     val_loader = DataLoader(val_set, shuffle=False, drop_last=True, batch_size=batch_size, num_workers=nw, pin_memory=True) 
 
 
@@ -113,9 +124,14 @@ def train_net(net,
     optimizer = optim.RMSprop(net.parameters(), lr=learning_rate, weight_decay=1e-8, momentum=0.9)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'max', patience=2)  # goal: maximize Dice score
     grad_scaler = torch.cuda.amp.GradScaler(enabled=amp)
-    criterion = nn.CrossEntropyLoss()
+    criterion = nn.CrossEntropyLoss(weight=torch.tensor([1., 6.]).to(device))
+    weightedbceloss = WeightedCrossEntropyLoss(ignore_index=-100)
+    GenDiceLoss = GeneralizedDiceLoss()
+    criterion2 = nn.CrossEntropyLoss(weight=torch.tensor([1., 4.])).to(device)
     global_step = 0
-
+    best_dice = 0.0
+    best_masks = torch.Tensor([])
+    best_maskprob = torch.Tensor([])
     # 5. Begin training
     for epoch in range(1, epochs+1):
         
@@ -143,24 +159,28 @@ def train_net(net,
                                 + dice_loss(F.softmax(masks_pred, dim=1).float(),
                                        F.one_hot(true_masks, net.n_classes).permute(0, 3, 1, 2).float(),
                                        multiclass=True)
+                            # mask_loss = weightedbceloss(masks_pred, true_masks) \
+                            #      + dice_loss(F.softmax(masks_pred, dim=1).float(),
+                            #            F.one_hot(true_masks, net.n_classes).permute(0, 3, 1, 2).float(),
+                            #            multiclass=True)
                         else:
                             ##sigmoid归一化到0-1
                             if net.out_sigmoid:
                                 mask_loss = dice_loss(masks_pred.squeeze().float(), true_masks.float(), multiclass=False)
                             else:
                                 mask_loss = dice_loss(torch.sigmoid(masks_pred.squeeze()).float(), true_masks.float(), multiclass=False)
-
+                                            
                     else: 
                         mask_loss = 0       
 
                     if cls_task:
                         _, cls_pred = net(images)
-                        cls_loss = criterion(cls_pred, true_cls.to(device=device, dtype=torch.long))
+                        cls_loss = criterion2(cls_pred, true_cls.to(device=device, dtype=torch.long))
+                        # cls_loss = Focalloss(cls_pred, F.one_hot(true_cls).to(device=device, dtype=torch.long))
                     else:
                         cls_loss = 0
 
-
-                    loss = mask_loss + cls_loss
+                    loss = mask_loss + alpha* cls_loss
                 loss.requires_grad_(True)
                 optimizer.zero_grad(set_to_none=True)
                 grad_scaler.scale(loss).backward()
@@ -194,23 +214,25 @@ def train_net(net,
             histograms['Gradients/' + tag] = wandb.Histogram(value.grad.data.cpu())
 
         #####val
-        val_dice_score, val_acc, sens, spec = undis_evaluate(net, val_loader, device, seg_task, cls_task)
+        val_dice_score, iou, val_acc, auc, sens, spec, valid_masks, valid_maskprob = undis_evaluate(net, val_loader, device, seg_task, cls_task)
         val_score = val_dice_score + val_acc
 
 
         scheduler.step(val_score)
         if seg_task and cls_task:
-            logging.info('Validation Dice score: {} Acc: {} Sens: {} Spec: {}'.format(val_dice_score, val_acc, sens, spec))
+            logging.info('Validation Dice score: {} iou: {} Acc: {} Auc: {} Sens: {} Spec: {}'.format(val_dice_score, iou, val_acc, auc, sens, spec))
         elif seg_task and not cls_task:
-            logging.info('Validation Dice score: {}'.format(val_dice_score))
+            logging.info('Validation Dice score: {} iou: {}'.format(val_dice_score, iou))
         elif not seg_task and cls_task:
-            logging.info('Validation Acc: {} Sens: {} Spec: {}'.format(val_acc, sens, spec))
+            logging.info('Validation Acc: {} Auc: {} Sens: {} Spec: {}'.format(val_acc, auc, sens, spec))
 
         experiment.log({
             'learning rate': optimizer.param_groups[0]['lr'],
             'val_loss': val_score,
             'validation Dice': val_dice_score if seg_task else None,
+            'iou': iou if iou else None,
             'validation acc': val_acc if cls_task else None,
+            'auc': auc if auc else None,
             'senstivity': sens if cls_task else None,
             'specificity': spec if cls_task else None,
             'images': wandb.Image(images[0].cpu()),
@@ -222,17 +244,36 @@ def train_net(net,
             'epoch': epoch,
             **histograms
         })
-                    
 
-        if save_checkpoint:
+        if best_dice < val_dice_score:
+            best_dice = val_dice_score
+            best_masks = valid_masks
+            best_maskprob = valid_maskprob
+            if save_checkpoint:
+                torch.save(net.state_dict(), 'best_dice.pth')
 
-            Path(dir_checkpoint).mkdir(parents=True, exist_ok=True)
-            torch.save(net.state_dict(), str(dir_checkpoint / 'checkpoint_epoch{}.pth'.format(epoch)))
-            logging.info(f'Checkpoint {epoch} saved!')
-            
+
+
+        # if save_checkpoint:
+
+        #     Path(dir_checkpoint).mkdir(parents=True, exist_ok=True)
+        #     torch.save(net.state_dict(), str(dir_checkpoint / 'checkpoint_epoch{}.pth'.format(epoch)))
+        #     logging.info(f'Checkpoint {epoch} saved!')
+    savedir = 'results/'   
+    for i in range(192):
+        # print(i)
+        img = val_set[i]['image'][0].numpy()
+        mask = val_set[i]['mask'].numpy()
+        mask = mask *255
+        ###创建文件夹
+        import matplotlib.pyplot as plt
+        plt.imsave(savedir + 'image{}.png'.format(i), img, cmap='gray', format='png')
+        plt.imsave(savedir + 'gt{}.png'.format(i), mask*255, cmap='gray')
+        plt.imsave(savedir + 'pred{}.png'.format(i), best_masks[i]*255, cmap='gray')
+        plt.imsave(savedir + 'probmap{}.png'.format(i), best_maskprob[i]*255, cmap='gray')
+
 
     # 删除临时缓存文件
-
     time_str = str(time.strftime("%Y-%m-%d-%H-%M-%S", time.localtime()))
     # if os.path.exists(checkpoint_path) is True:
     #     os.remove(checkpoint_path)
@@ -243,7 +284,7 @@ def train_net(net,
 def get_args():
     parser = argparse.ArgumentParser(description='Train the UNet on images and target masks')
     parser.add_argument('--epochs', '-e', metavar='E', type=int, default=5, help='Number of epochs')
-    parser.add_argument('--batch-size', '-b', dest='batch_size', metavar='B', type=int, default=4, help='Batch size')
+    parser.add_argument('--batch-size', '-b', dest='batch_size', metavar='B', type=int, default=8, help='Batch size')
     parser.add_argument('--learning-rate', '-l', metavar='LR', type=float, default=1e-5,
                         help='Learning rate', dest='lr')
     parser.add_argument('--load', '-f', type=str, default=False, help='Load model from a .pth file')
@@ -273,14 +314,36 @@ if __name__ == '__main__':
 #####是否开启多任务
     seg_task = True
     cls_task = False
+    alpha = 0.8
 ####网络输入通道数
     in_channels = 1
-    net_name = 'ResUnetPlusPlus'
+    net_name = 'ResUNet'
 ###自定义网络
     if net_name == 'Resnet18':
         net = ResNet18(n_channels=in_channels, n_classes=2)
+    elif net_name == 'MRCNet':
+        net = MRCNet(n_channels=in_channels, 
+                    n_classes=args.classes, 
+                    bilinear=args.bilinear, 
+                    seg_task=seg_task, 
+                    cls_task=cls_task
+                )
+        logging.info(f'Network:\n'
+            f'\t{net.n_channels} input channels\n'
+            f'\t{net.n_classes} output channels (classes)\n'
+            f'\t{"Bilinear" if net.bilinear else "Transposed conv"} upscaling')
     elif net_name == 'ResUNet':
-        net = ResUnet(n_channels=in_channels, n_classes=2)
+        net = mtihead_ResUnet(n_channels=in_channels, 
+                            n_classes=args.classes, 
+                            bilinear=args.bilinear, 
+                            seg_task=seg_task, 
+                            cls_task=cls_task
+                        )
+        logging.info(f'Network:\n'
+                    f'\t{net.n_channels} input channels\n'
+                    f'\t{net.n_classes} output channels (classes)\n'
+                    f'\t{"Bilinear" if net.bilinear else "Transposed conv"} upscaling')
+        # net = ResUnet(n_channels=in_channels, n_classes=2)
     elif net_name == 'ResUnetPlusPlus':
         net = ResUnetPlusPlus(n_channels=in_channels, n_classes=2)
     elif net_name == 'UNet':
@@ -318,3 +381,5 @@ if __name__ == '__main__':
         torch.save(net.state_dict(), 'INTERRUPTED.pth')
         logging.info('Saved interrupt')
         raise
+
+

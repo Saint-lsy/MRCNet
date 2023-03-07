@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-
+from .unet_parts import *
 
 class ResidualConv(nn.Module):
     def __init__(self, input_dim, output_dim, stride, padding):
@@ -18,7 +18,6 @@ class ResidualConv(nn.Module):
         )
         self.conv_skip = nn.Sequential(
             nn.Conv2d(input_dim, output_dim, kernel_size=3, stride=stride, padding=1),
-            nn.BatchNorm2d(output_dim),
         )
 
     def forward(self, x):
@@ -54,51 +53,6 @@ class Squeeze_Excite_Block(nn.Module):
         y = self.avg_pool(x).view(b, c)
         y = self.fc(y).view(b, c, 1, 1)
         return x * y.expand_as(x)
-
-
-class ASPP(nn.Module):
-    def __init__(self, in_dims, out_dims, rate=[6, 12, 18]):
-        super(ASPP, self).__init__()
-
-        self.aspp_block1 = nn.Sequential(
-            nn.Conv2d(
-                in_dims, out_dims, 3, stride=1, padding=rate[0], dilation=rate[0]
-            ),
-            nn.ReLU(inplace=True),
-            nn.BatchNorm2d(out_dims),
-        )
-        self.aspp_block2 = nn.Sequential(
-            nn.Conv2d(
-                in_dims, out_dims, 3, stride=1, padding=rate[1], dilation=rate[1]
-            ),
-            nn.ReLU(inplace=True),
-            nn.BatchNorm2d(out_dims),
-        )
-        self.aspp_block3 = nn.Sequential(
-            nn.Conv2d(
-                in_dims, out_dims, 3, stride=1, padding=rate[2], dilation=rate[2]
-            ),
-            nn.ReLU(inplace=True),
-            nn.BatchNorm2d(out_dims),
-        )
-
-        self.output = nn.Conv2d(len(rate) * out_dims, out_dims, 1)
-        self._init_weights()
-
-    def forward(self, x):
-        x1 = self.aspp_block1(x)
-        x2 = self.aspp_block2(x)
-        x3 = self.aspp_block3(x)
-        out = torch.cat([x1, x2, x3], dim=1)
-        return self.output(out)
-
-    def _init_weights(self):
-        for m in self.modules():
-            if isinstance(m, nn.Conv2d):
-                nn.init.kaiming_normal_(m.weight)
-            elif isinstance(m, nn.BatchNorm2d):
-                m.weight.data.fill_(1)
-                m.bias.data.zero_()
 
 
 class Upsample_(nn.Module):
