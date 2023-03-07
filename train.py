@@ -63,8 +63,8 @@ def train_net(net,
     # n_train = len(dataset) - n_val
     # train_set, val_set = random_split(dataset, [n_train, n_val], generator=torch.Generator().manual_seed(0))
 
-    train_set = LNM_Dataset('train_10_12.csv',input_channel=input_channel)
-    val_set = LNM_Dataset('validation_10_12.csv', input_channel=input_channel, mode='val')
+    train_set = LNM_Dataset('dataset/train_10_12.csv',input_channel=input_channel)
+    val_set = LNM_Dataset('dataset/validation_10_12.csv', input_channel=input_channel, mode='val')
 
     n_train = len(train_set)
     n_val = len(val_set)
