@@ -3,6 +3,9 @@ This is code for paper Multi-task Residual Cross-attention Network for Tumor Seg
 
 # Dependencies
 Python == 3.8.12
+
 PyTorch == 1.10.1
+
 torchvision == 0.11.2
+
 scikit-learn == 1.1.2
